@@ -11,16 +11,39 @@
 // @grant        GM_addStyle
 // @require      https://cdnjs.cloudflare.com/ajax/libs/jquery/3.1.1/jquery.min.js
 // @require      https://cdn.rawgit.com/jprichardson/string.js/master/dist/string.min.js
-// @require      https://greasyfork.org/scripts/426455-imdb-link-back/code/imdb%20link%20back.user.js
 // ==/UserScript==
 
 (function() {
     'use strict';
     
+    // ==================== IMDb Link Back 功能 ====================
+    // 将豆瓣电影页面的 IMDb 编号转换为可点击链接
+    function addImdbLinkBack() {
+        var items = document.querySelectorAll('#info .pl');
+        var filtered = Array.from(items).filter(function(el) {
+            return el.textContent.startsWith('IMDb'); // 找 IMDb 行
+        });
+        
+        if (filtered.length) {
+            var imdb = filtered[0].nextSibling;
+            if (imdb && imdb.nodeType === 3) { // 3 = TEXT_NODE
+                var imdbcode = imdb.textContent.trim(); // like "tt10370822"
+                if (imdbcode && imdbcode.startsWith('tt')) {
+                    var imdblink = document.createElement('span');
+                    imdblink.innerHTML = ' <a href="https://www.imdb.com/title/' + imdbcode + '" target="_blank" rel="noopener noreferrer">' + imdbcode + '</a>';
+                    imdb.parentNode.insertBefore(imdblink, imdb);
+                    imdb.parentNode.removeChild(imdb);
+                    console.log('[Douban to IMDb] IMDb 链接已添加:', imdbcode);
+                }
+            }
+        }
+    }
+    // ============================================================
+    
     // ==================== 配置参数 ====================
     const CONFIG = {
         // 同步延时设置
-        MOVIE_SYNC_INTERVAL: 5000,        // 每部电影同步间隔（毫秒）默认5秒
+        MOVIE_SYNC_INTERVAL: 3000,        // 每部电影同步间隔（毫秒）默认3秒
         PAGE_OPEN_INTERVAL: 20000,        // 每页打开间隔（毫秒）默认20秒
         AUTO_CLOSE_DELAY: 5000,           // 自动同步完成后关闭标签页延迟（毫秒）默认5秒
         
@@ -1483,8 +1506,13 @@ if (location.hostname == 'movie.douban.com') {
 
     GM_addStyle('#dale_movie_subject_inner_middle{display:none!important}');
     
-    // 在"我看过的电影"页面添加同步按钮
-    if (location.pathname.includes('/mine') || location.pathname.includes('/collect')) {
+    // 在"我看过的电影"页面和搜索页面添加同步按钮
+    if (location.pathname.includes('/mine') || 
+        location.pathname.includes('/collect') || 
+        location.pathname.includes('/wish') || 
+        location.pathname.includes('/people/') ||
+        location.pathname.includes('/search') ||
+        location.pathname.includes('/tag/')) {
         // 等待页面加载完成
         setTimeout(function() {
             console.log('[Douban to IMDb] 脚本开始执行');
@@ -1670,6 +1698,14 @@ if (location.hostname == 'movie.douban.com') {
         }, CONFIG.PAGE_LOAD_DELAY);
     }
 
+    // 在电影详情页添加 IMDb 链接
+    if (location.pathname.includes('/subject/')) {
+        // 等待页面加载完成后添加 IMDb 链接
+        setTimeout(function() {
+            addImdbLinkBack();
+        }, 500);
+    }
+    
     // 在电影详情页自动同步（从列表页点击按钮跳转过来的）
     if (location.pathname.includes('/subject/') && location.hash.startsWith('#sync-')) {
         console.log('[Douban to IMDb] 检测到同步请求，等待页面加载...');
