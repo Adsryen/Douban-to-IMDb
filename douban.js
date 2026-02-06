@@ -67,9 +67,6 @@
     };
     // ================================================
     
-    // 全局变量：当前同步目标
-    let currentSyncTarget = CONFIG.SYNC_TARGET.RATING;
-    
     // 测试同步状态
     let testSyncStatus = {
         isTestPhase: false,
@@ -134,10 +131,10 @@ function showSyncTargetDialog(callback) {
         dialog.addClass('show');
     }, 10);
     
-    // 选择目标
+    // 显示同步目标选择对话框
     dialog.find('.sync-target-option').on('click', function() {
         const target = $(this).attr('data-target');
-        currentSyncTarget = target;
+        // 不再修改全局变量，直接通过回调返回
         
         dialog.removeClass('show');
         setTimeout(() => {
@@ -410,7 +407,8 @@ function batchSyncCurrentPage() {
                 title: movieTitle,
                 url: movieUrl,
                 rating: rating,
-                button: $btn
+                button: $btn,
+                target: target  // 添加 target 属性
             });
         });
         
@@ -483,7 +481,8 @@ function batchSyncCurrentPage() {
                         tab: newTab,
                         index: index,
                         movie: movie,
-                        startTime: Date.now()
+                        startTime: Date.now(),
+                        lastResult: ''
                     });
                 }
                 
@@ -497,22 +496,88 @@ function batchSyncCurrentPage() {
         // 定期检查标签页状态
         const checkInterval = setInterval(() => {
             openedTabs.forEach((item, i) => {
+                // 不再读取 window.name，改为检查 localStorage
+                
                 if (item.tab && item.tab.closed) {
                     const movie = item.movie;
                     const index = item.index;
                     const elapsed = Date.now() - item.startTime;
                     
-                    console.log('[Douban to IMDb] 标签页已关闭:', movie.title, '耗时:', elapsed + 'ms');
+                    // 从 localStorage 读取结果
+                    const resultKey = 'douban-sync-result-' + batchId + '-' + index;
+                    const resultData = localStorage.getItem(resultKey);
                     
-                    // 标签页关闭，判断为成功
-                    movie.button.removeClass('syncing').addClass('synced').text('已同步✓');
-                    SyncProgressManager.updateMovie(index, 'success');
+                    // 调试：打印所有相关的 localStorage 键
+                    console.log('[Douban to IMDb] 检查 localStorage，key:', resultKey);
+                    console.log('[Douban to IMDb] localStorage 中所有键:', Object.keys(localStorage));
+                    const allSyncKeys = Object.keys(localStorage).filter(k => k.startsWith('douban-sync-result-'));
+                    console.log('[Douban to IMDb] 所有同步结果键:', allSyncKeys);
+                    allSyncKeys.forEach(k => {
+                        console.log('[Douban to IMDb] -', k, '=', localStorage.getItem(k));
+                    });
                     
-                    // 测试阶段统计
-                    if (testSyncStatus.isTestPhase) {
-                        testSyncStatus.successCount++;
-                        console.log('[Douban to IMDb] 测试同步成功:', testSyncStatus.successCount, '/', testSyncStatus.testCount);
-                        checkTestPhaseComplete(movieList, batchId);
+                    console.log('[Douban to IMDb] 标签页已关闭:', movie.title, '耗时:', elapsed + 'ms', 'data:', resultData);
+                    
+                    // 通过 localStorage 判断结果
+                    let isSuccess = false;
+                    let failReason = '';
+                    
+                    if (resultData) {
+                        try {
+                            const result = JSON.parse(resultData);
+                            console.log('[Douban to IMDb] 读取到结果:', result);
+                            
+                            if (result.success) {
+                                isSuccess = true;
+                                failReason = 'Marked as success: ' + (result.result || 'success');
+                            } else {
+                                isSuccess = false;
+                                failReason = 'Marked as failed: ' + (result.result || 'unknown');
+                            }
+                            
+                            // 清理已使用的结果
+                            localStorage.removeItem(resultKey);
+                        } catch (e) {
+                            console.error('[Douban to IMDb] 解析结果失败:', e);
+                            isSuccess = false;
+                            failReason = 'Failed to parse result';
+                        }
+                    } else if (elapsed > 30000) {
+                        // 超过 30 秒仍未读取到结果，判断为超时失败
+                        isSuccess = false;
+                        failReason = 'Timeout (> 30s), no result found';
+                    } else {
+                        // 没有读取到结果，判断为失败
+                        isSuccess = false;
+                        failReason = 'No result found in localStorage';
+                    }
+                    
+                    console.log('[Douban to IMDb] 判断结果:', isSuccess ? '成功' : '失败', '原因:', failReason);
+                    
+                    console.log('[Douban to IMDb] 判断结果:', isSuccess ? '成功' : '失败', '原因:', failReason);
+                    
+                    // 根据实际结果更新状态
+                    if (isSuccess) {
+                        movie.button.removeClass('syncing').addClass('synced').text('已同步✓');
+                        SyncProgressManager.updateMovie(index, 'success');
+                        
+                        // 测试阶段统计
+                        if (testSyncStatus.isTestPhase) {
+                            testSyncStatus.successCount++;
+                            console.log('[Douban to IMDb] 测试同步成功:', testSyncStatus.successCount, '/', testSyncStatus.testCount);
+                            checkTestPhaseComplete(movieList, batchId);
+                        }
+                    } else {
+                        movie.button.removeClass('syncing').addClass('sync-failed').text('失败✗');
+                        SyncProgressManager.updateMovie(index, 'failed');
+                        console.error('[Douban to IMDb] 同步失败:', movie.title, '原因:', failReason);
+                        
+                        // 测试阶段统计
+                        if (testSyncStatus.isTestPhase) {
+                            testSyncStatus.failedCount++;
+                            console.log('[Douban to IMDb] 测试同步失败:', testSyncStatus.failedCount, '/', testSyncStatus.testCount);
+                            checkTestPhaseComplete(movieList, batchId);
+                        }
                     }
                     
                     updateFloatButtonCount();
@@ -545,8 +610,10 @@ function checkTestPhaseComplete(movieList, batchId) {
             testSyncStatus.canContinue = true;
             showToast(`测试成功！${testSyncStatus.successCount}/${testSyncStatus.testCount} 部成功，继续同步剩余电影...`, 'success');
             
-            // 继续同步剩余电影
-            continueRemainingSync(movieList, batchId);
+            // 继续同步剩余电影，target 已经在 movieList 中
+            const target = movieList[0].target;
+            console.log('[Douban to IMDb] 继续同步，使用 target:', target);
+            continueRemainingSync(movieList, batchId, target);
         } else {
             // 全部失败，停止同步
             testSyncStatus.canContinue = false;
@@ -559,8 +626,7 @@ function checkTestPhaseComplete(movieList, batchId) {
 }
 
 // 继续同步剩余电影
-function continueRemainingSync(movieList, batchId) {
-    const target = movieList[0].target;
+function continueRemainingSync(movieList, batchId, target) {
     const startIndex = CONFIG.TEST_SYNC_COUNT;
     
     console.log('[Douban to IMDb] 开始同步剩余电影，从索引', startIndex, '开始');
@@ -599,7 +665,8 @@ function continueRemainingSync(movieList, batchId) {
                     tab: newTab,
                     index: index,
                     movie: movie,
-                    startTime: Date.now()
+                    startTime: Date.now(),
+                    lastResult: ''
                 });
             }
             
@@ -617,11 +684,58 @@ function continueRemainingSync(movieList, batchId) {
                 const index = item.index;
                 const elapsed = Date.now() - item.startTime;
                 
-                console.log('[Douban to IMDb] 标签页已关闭:', movie.title, '耗时:', elapsed + 'ms');
+                // 从 localStorage 读取结果
+                const resultKey = 'douban-sync-result-' + batchId + '-' + index;
+                const resultData = localStorage.getItem(resultKey);
                 
-                // 标签页关闭，判断为成功
-                movie.button.removeClass('syncing').addClass('synced').text('已同步✓');
-                SyncProgressManager.updateMovie(index, 'success');
+                console.log('[Douban to IMDb] 标签页已关闭:', movie.title, '耗时:', elapsed + 'ms', 'localStorage key:', resultKey);
+                
+                // 通过 localStorage 判断结果
+                let isSuccess = false;
+                let failReason = '';
+                
+                if (resultData) {
+                    try {
+                        const result = JSON.parse(resultData);
+                        console.log('[Douban to IMDb] 读取到结果:', result);
+                        
+                        if (result.success) {
+                            isSuccess = true;
+                            failReason = 'Marked as success: ' + (result.result || 'success');
+                        } else {
+                            isSuccess = false;
+                            failReason = 'Marked as failed: ' + (result.result || 'unknown');
+                        }
+                        
+                        // 清理已使用的结果
+                        localStorage.removeItem(resultKey);
+                    } catch (e) {
+                        console.error('[Douban to IMDb] 解析结果失败:', e);
+                        isSuccess = false;
+                        failReason = 'Failed to parse result';
+                    }
+                } else if (elapsed > 30000) {
+                    // 超过 30 秒仍未读取到结果，判断为超时失败
+                    isSuccess = false;
+                    failReason = 'Timeout (> 30s), no result found';
+                } else {
+                    // 没有读取到结果，判断为失败
+                    isSuccess = false;
+                    failReason = 'No result found in localStorage';
+                }
+                
+                console.log('[Douban to IMDb] 判断结果:', isSuccess ? '成功' : '失败', '原因:', failReason);
+                
+                // 根据实际结果更新状态
+                if (isSuccess) {
+                    movie.button.removeClass('syncing').addClass('synced').text('已同步✓');
+                    SyncProgressManager.updateMovie(index, 'success');
+                } else {
+                    movie.button.removeClass('syncing').addClass('sync-failed').text('失败✗');
+                    SyncProgressManager.updateMovie(index, 'failed');
+                    console.error('[Douban to IMDb] 同步失败:', movie.title, '原因:', failReason);
+                }
+                
                 updateFloatButtonCount();
                 
                 // 移除已处理的项
@@ -1131,6 +1245,13 @@ GM_addStyle(`
         background: #52c41a;
         cursor: default;
     }
+    .sync-imdb-btn.sync-failed {
+        background: #ff4d4f;
+        cursor: pointer;
+    }
+    .sync-imdb-btn.sync-failed:hover {
+        background: #ff7875;
+    }
     
     /* 悬浮按钮样式 */
     .batch-sync-float-container {
@@ -1474,7 +1595,7 @@ if (location.hostname == 'movie.douban.com') {
                 // 从 hash 中提取目标类型
                 const hashParts = location.hash.split('-');
                 const target = hashParts[2] || CONFIG.SYNC_TARGET.RATING;
-                currentSyncTarget = target;
+                // 不再修改全局变量
                 
                 // 生成批次ID（用于标签页检测）
                 const batchId = 'batch-auto-' + Date.now();
@@ -1527,6 +1648,9 @@ if (location.hostname == 'movie.douban.com') {
                     const checkInterval = setInterval(() => {
                         openedTabs.forEach((item, i) => {
                             if (item.tab && item.tab.closed) {
+                                // 这里的 batchId 是子页面自己生成的，无法获取详情页的结果
+                                // 所以子页面的检测保持简单，只标记为已同步
+                                // 实际的成功/失败判断由主页面的批量同步逻辑处理
                                 item.button.removeClass('syncing').addClass('synced').text('已同步✓');
                                 openedTabs.splice(i, 1);
                             }
@@ -1552,13 +1676,62 @@ if (location.hostname == 'movie.douban.com') {
         
         // 等待页面加载完成
         setTimeout(function() {
-            const hashParts = location.hash.substring(6).split('-'); // 移除 #sync-
-            const rating = parseInt(hashParts[0]) || 5;
-            const target = hashParts[1] || CONFIG.SYNC_TARGET.RATING;
-            const batchId = hashParts[2] || '';
-            const movieIndex = parseInt(hashParts[3]) || 0;
+            // 解析 hash: #sync-5-watchlist-batch-1770415236571-0
+            // 格式: #sync-{rating}-{target}-{batchId}-{movieIndex}
+            // 注意：batchId 本身包含 '-'，所以需要特殊处理
+            const hash = location.hash.substring(6); // 移除 #sync-
+            const parts = hash.split('-');
+            
+            // parts[0] = rating
+            // parts[1] = target
+            // parts[2] = 'batch'
+            // parts[3] = timestamp (batchId 的一部分)
+            // parts[4] = movieIndex
+            
+            const rating = parseInt(parts[0]) || 5;
+            const target = parts[1] || CONFIG.SYNC_TARGET.RATING;
+            const batchId = parts[2] + '-' + parts[3]; // 重新组合 batchId
+            const movieIndex = parseInt(parts[4]) || 0;
             
             let id = location.pathname.split('/')[2];
+            
+            // 检查是否是从 IMDb 返回的（URL 中有 from-imdb 参数）
+            const urlParams = new URLSearchParams(location.search);
+            const fromImdb = urlParams.get('from-imdb');
+            const imdbResult = urlParams.get('result');
+            
+            if (fromImdb === 'true' && imdbResult) {
+                // 从 IMDb 返回，从 URL 参数中读取 batchId 和 movieIndex
+                const urlBatchId = urlParams.get('batchId') || batchId;
+                const urlMovieIndex = parseInt(urlParams.get('index')) || movieIndex;
+                
+                console.log('[Douban to IMDb] 从 IMDb 返回，结果:', imdbResult, 'batchId:', urlBatchId, 'index:', urlMovieIndex);
+                
+                const resultKey = 'douban-sync-result-' + urlBatchId + '-' + urlMovieIndex;
+                if (imdbResult === 'success' || imdbResult === 'already-in-list') {
+                    localStorage.setItem(resultKey, JSON.stringify({
+                        success: true,
+                        result: imdbResult,
+                        timestamp: Date.now()
+                    }));
+                    console.log('[Douban to IMDb] 已保存成功结果到:', resultKey);
+                } else {
+                    localStorage.setItem(resultKey, JSON.stringify({
+                        success: false,
+                        result: imdbResult,
+                        timestamp: Date.now()
+                    }));
+                    console.log('[Douban to IMDb] 已保存失败结果到:', resultKey);
+                }
+                
+                // 延迟关闭，让主页面有时间读取
+                setTimeout(() => {
+                    console.log('[Douban to IMDb] 准备关闭页面');
+                    window.close();
+                }, 2000);
+                
+                return; // 不再继续执行下面的代码
+            }
             
             console.log('[Douban to IMDb] 开始提取 IMDb ID...');
             console.log('[Douban to IMDb] Hash参数:', { rating, target, batchId, movieIndex });
@@ -1588,11 +1761,21 @@ if (location.hostname == 'movie.douban.com') {
             
             if (imdbId && imdbId.includes('tt')) {
                 const score = rating * 2;
-                const imdbLink = 'https://www.imdb.com/title/' + imdbId + '/#' + score + '-' + target + '-' + batchId + '-' + movieIndex;
+                const imdbLink = 'https://www.imdb.com/title/' + imdbId + '/#' + score + '-' + target + '-' + batchId + '-' + movieIndex + '-' + id;
                 
                 const targetText = target === CONFIG.SYNC_TARGET.RATING ? '已看(评分)' : '想看(Watchlist)';
                 console.log('[Douban to IMDb] 准备跳转到 IMDb:', imdbLink);
                 showToast(`正在同步到 IMDb ${targetText}: ${score}分`, 'success');
+                
+                // 在 localStorage 中标记为处理中
+                const resultKey = 'douban-sync-result-' + batchId + '-' + movieIndex;
+                localStorage.setItem(resultKey, JSON.stringify({
+                    status: 'processing',
+                    movieId: id,
+                    imdbId: imdbId,
+                    timestamp: Date.now()
+                }));
+                console.log('[Douban to IMDb] 已标记为处理中:', resultKey);
                 
                 setTimeout(() => {
                     console.log('[Douban to IMDb] 执行跳转...');
@@ -1605,17 +1788,18 @@ if (location.hostname == 'movie.douban.com') {
                 console.log('[Douban to IMDb] #info a 元素数量:', $('#info a').length);
                 showToast('未找到 IMDb ID', 'error');
                 
-                // 发送失败消息
-                if (batchId) {
-                    localStorage.setItem('douban-sync-result-' + batchId + '-' + movieIndex, JSON.stringify({
-                        success: false,
-                        index: movieIndex,
-                        reason: 'No IMDb ID found'
-                    }));
-                }
+                // 保存失败结果到 localStorage
+                const resultKey = 'douban-sync-result-' + batchId + '-' + movieIndex;
+                localStorage.setItem(resultKey, JSON.stringify({
+                    success: false,
+                    result: 'no-imdb-id',
+                    timestamp: Date.now()
+                }));
+                console.log('[Douban to IMDb] 已保存失败结果到 localStorage:', resultKey);
                 
-                // 关闭页面
+                // 延迟关闭，让主页面有时间读取
                 setTimeout(() => {
+                    console.log('[Douban to IMDb] 准备关闭页面');
                     window.close();
                 }, 2000);
             }
@@ -1715,34 +1899,124 @@ if (location.hostname == 'www.imdb.com') {
             $('ul[data-testid="hero-subnav-bar-topic-links"]').append('<li role="presentation" class="ipc-inline-list__item"><a target="_blank" href="' + doubanLink + '" class="ipc-link ipc-link--baseAlt ipc-link--inherit-color" data-testid="hero-subnav-bar-imdb-pro-link">Douban</a></li>')
         }, 1000);
 
-        let score = location.hash.replace('#', '').split('-')[0];
-        const target = location.hash.split('-')[1] || CONFIG.SYNC_TARGET.RATING;
-        const batchId = location.hash.split('-')[2] || '';
-        const movieIndex = parseInt(location.hash.split('-')[3]) || 0;
+        // 解析 hash: #10-watchlist-batch-1770416024180-1-30455615
+        // 格式: #{score}-{target}-{batchId}-{movieIndex}-{doubanId}
+        // 注意：batchId 本身包含 '-'，格式为 batch-{timestamp}
+        const hash = location.hash.replace('#', '');
+        const parts = hash.split('-');
         
-        console.log('[Douban to IMDb] Hash参数:', { score, target, batchId, movieIndex });
+        // parts[0] = score
+        // parts[1] = target
+        // parts[2] = 'batch'
+        // parts[3] = timestamp (batchId 的一部分)
+        // parts[4] = movieIndex
+        // parts[5] = doubanId
+        
+        let score = parts[0];
+        const target = parts[1] || CONFIG.SYNC_TARGET.RATING;
+        const batchId = parts[2] + '-' + parts[3]; // 重新组合 batchId
+        const movieIndex = parseInt(parts[4]) || 0;
+        const doubanId = parts[5] || '';
+        
+        console.log('[Douban to IMDb] IMDb 页面加载，Hash参数:', { score, target, batchId, movieIndex, doubanId });
+        
+        // 设置初始状态
+        if (score.length > 0) {
+            window.name = 'processing';
+            console.log('[Douban to IMDb] 设置初始 window.name:', window.name);
+        }
+        
+        // 构造返回豆瓣的 URL
+        const backToDoubanUrl = 'https://movie.douban.com/subject/' + doubanId + '/?from-imdb=true&result=';
         
         if (score.length > 0) {
             if (target === CONFIG.SYNC_TARGET.WATCHLIST) {
                 // 添加到 Watchlist
                 window.setTimeout(function () {
-                    console.log('[Douban to IMDb] 添加到 Watchlist');
-                    $('button[aria-label="Add to Watchlist"]').click();
+                    console.log('[Douban to IMDb] 开始处理 Watchlist');
                     
-                    // 发送成功消息
-                    if (batchId) {
-                        setTimeout(function() {
-                            localStorage.setItem('douban-sync-result-' + batchId + '-' + movieIndex, JSON.stringify({
-                                success: true,
-                                index: movieIndex
-                            }));
-                        }, 2000);
-                    }
-                }, CONFIG.IMDB_WATCHLIST_CLICK_DELAY);
-                window.setTimeout(function () {
-                    console.log('[Douban to IMDb] Watchlist 添加完成，准备关闭');
-                    window.close();
-                }, CONFIG.IMDB_WATCHLIST_CLOSE_DELAY);
+                    // 等待按钮加载，最多等待 10 秒
+                    let waitCount = 0;
+                    const maxWaitCount = 20; // 10秒 / 500ms
+                    
+                    const waitForButton = setInterval(function() {
+                        waitCount++;
+                        
+                        // 尝试多种选择器来找到 Watchlist 按钮
+                        let $watchlistBtn = $('button[data-testid="tm-box-wl-button"]');
+                        if ($watchlistBtn.length === 0) {
+                            $watchlistBtn = $('button[aria-label="Add to Watchlist"]');
+                        }
+                        if ($watchlistBtn.length === 0) {
+                            $watchlistBtn = $('button:contains("Add to Watchlist")');
+                        }
+                        
+                        if ($watchlistBtn.length > 0) {
+                            clearInterval(waitForButton);
+                            console.log('[Douban to IMDb] 找到 Watchlist 按钮');
+                            
+                            // 检查是否已经在 Watchlist 中
+                            const isAlreadyInWatchlist = $watchlistBtn.attr('aria-pressed') === 'true' || 
+                                                        $watchlistBtn.find('[data-testid="tm-box-wl-text"]').text().includes('In Watchlist');
+                            
+                            if (isAlreadyInWatchlist) {
+                                console.log('[Douban to IMDb] ✓ 已经在 Watchlist 中，无需添加');
+                                
+                                // 跳转回豆瓣
+                                console.log('[Douban to IMDb] 准备跳转回豆瓣');
+                                window.location.href = backToDoubanUrl + 'already-in-list&batchId=' + batchId + '&index=' + movieIndex + '#sync-' + score + '-' + target + '-' + batchId + '-' + movieIndex;
+                            } else {
+                                console.log('[Douban to IMDb] 不在 Watchlist 中，准备点击按钮');
+                                $watchlistBtn[0].click();
+                                
+                                // 开始检查是否添加成功
+                                let checkCount = 0;
+                                const maxChecks = CONFIG.IMDB_RATE_MAX_CHECK_TIME / CONFIG.IMDB_RATE_CHECK_INTERVAL;
+                                
+                                const checkInterval = setInterval(function() {
+                                    checkCount++;
+                                    
+                                    // 检查按钮状态
+                                    const $btn = $('button[data-testid="tm-box-wl-button"]');
+                                    const isPressed = $btn.attr('aria-pressed') === 'true';
+                                    const hasInWatchlistText = $btn.find('[data-testid="tm-box-wl-text"]').text().includes('In Watchlist');
+                                    const hasCheckIcon = $btn.find('.ipc-icon--done').length > 0;
+                                    
+                                    console.log('[Douban to IMDb] 检查 Watchlist 状态 (' + checkCount + '/' + maxChecks + '):', {
+                                        isPressed: isPressed,
+                                        hasInWatchlistText: hasInWatchlistText,
+                                        hasCheckIcon: hasCheckIcon,
+                                        buttonText: $btn.find('[data-testid="tm-box-wl-text"]').text()
+                                    });
+                                    
+                                    if (isPressed || hasInWatchlistText || hasCheckIcon || checkCount >= maxChecks) {
+                                        clearInterval(checkInterval);
+                                        
+                                        if (isPressed || hasInWatchlistText || hasCheckIcon) {
+                                            console.log('[Douban to IMDb] ✓ 添加到 Watchlist 成功！准备跳转回豆瓣');
+                                            
+                                            // 跳转回豆瓣
+                                            window.location.href = backToDoubanUrl + 'success&batchId=' + batchId + '&index=' + movieIndex + '#sync-' + score + '-' + target + '-' + batchId + '-' + movieIndex;
+                                        } else {
+                                            console.log('[Douban to IMDb] ✗ Watchlist 状态未确认，但已达到最大检查次数');
+                                            
+                                            // 跳转回豆瓣，标记失败
+                                            window.location.href = backToDoubanUrl + 'failed-timeout&batchId=' + batchId + '&index=' + movieIndex + '#sync-' + score + '-' + target + '-' + batchId + '-' + movieIndex;
+                                        }
+                                    }
+                                }, CONFIG.IMDB_RATE_CHECK_INTERVAL);
+                            }
+                        } else if (waitCount >= maxWaitCount) {
+                            clearInterval(waitForButton);
+                            console.error('[Douban to IMDb] ✗ 等待超时，未找到 Watchlist 按钮');
+                            
+                            // 跳转回豆瓣，标记失败
+                            window.location.href = backToDoubanUrl + 'failed-no-button&batchId=' + batchId + '&index=' + movieIndex + '#sync-' + score + '-' + target + '-' + batchId + '-' + movieIndex;
+                        } else {
+                            console.log('[Douban to IMDb] 等待 Watchlist 按钮加载... (' + waitCount + '/' + maxWaitCount + ')');
+                        }
+                    }, 500); // 每 500ms 检查一次
+                }, 2000); // 先等待 2 秒让页面基本加载
             } else {
                 // 评分到 History
                 window.setTimeout(function () {
@@ -1789,55 +2063,15 @@ if (location.hostname == 'www.imdb.com') {
                             clearInterval(checkInterval);
                             
                             if (hasRating || hasRatedText) {
-                                console.log('[Douban to IMDb] ✓ 评分成功！准备关闭页面');
-                                console.log('[Douban to IMDb] 发送成功消息，BatchID:', batchId, 'Index:', movieIndex);
+                                console.log('[Douban to IMDb] ✓ 评分成功！准备跳转回豆瓣');
                                 
-                                // 发送成功消息
-                                if (batchId) {
-                                    const resultKey = 'douban-sync-result-' + batchId + '-' + movieIndex;
-                                    const resultData = JSON.stringify({
-                                        success: true,
-                                        index: movieIndex,
-                                        timestamp: Date.now()
-                                    });
-                                    console.log('[Douban to IMDb] 存储消息 Key:', resultKey);
-                                    console.log('[Douban to IMDb] 存储消息 Data:', resultData);
-                                    localStorage.setItem(resultKey, resultData);
-                                    console.log('[Douban to IMDb] 消息已存储');
-                                }
-                                
-                                setTimeout(function() {
-                                    // 尝试关闭窗口
-                                    console.log('[Douban to IMDb] 尝试关闭窗口...');
-                                    window.close();
-                                    
-                                    // 如果无法关闭（浏览器安全限制），则跳转回豆瓣
-                                    setTimeout(function() {
-                                        console.log('[Douban to IMDb] 无法关闭窗口，跳转回豆瓣');
-                                        window.location.href = 'https://movie.douban.com/';
-                                    }, 500);
-                                }, CONFIG.IMDB_RATE_SUCCESS_CLOSE_DELAY);
+                                // 跳转回豆瓣
+                                window.location.href = backToDoubanUrl + 'success&batchId=' + batchId + '&index=' + movieIndex + '#sync-' + score + '-' + target + '-' + batchId + '-' + movieIndex;
                             } else {
                                 console.log('[Douban to IMDb] ✗ 评分状态未确认，但已达到最大检查次数');
                                 
-                                // 发送失败消息
-                                if (batchId) {
-                                    const resultKey = 'douban-sync-result-' + batchId + '-' + movieIndex;
-                                    const resultData = JSON.stringify({
-                                        success: false,
-                                        index: movieIndex,
-                                        reason: 'Rating verification timeout',
-                                        timestamp: Date.now()
-                                    });
-                                    console.log('[Douban to IMDb] 存储失败消息 Key:', resultKey);
-                                    console.log('[Douban to IMDb] 存储失败消息 Data:', resultData);
-                                    localStorage.setItem(resultKey, resultData);
-                                }
-                                
-                                window.close();
-                                setTimeout(function() {
-                                    window.location.href = 'https://movie.douban.com/';
-                                }, 500);
+                                // 跳转回豆瓣，标记失败
+                                window.location.href = backToDoubanUrl + 'failed-timeout&batchId=' + batchId + '&index=' + movieIndex + '#sync-' + score + '-' + target + '-' + batchId + '-' + movieIndex;
                             }
                         }
                     }, CONFIG.IMDB_RATE_CHECK_INTERVAL);
