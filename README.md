@@ -123,7 +123,7 @@ const CONFIG = {
    - 建议先同步到 IMDb 的"已看"（评分）列表
 
 2. **第二步：IMDb → Trakt**
-   - 访问 [Trakt 导入页面](https://trakt.tv/settings/import)
+   - 访问 [Trakt 导入页面](https://trakt.tv/welcome/7)
    - 选择"IMDb Ratings"导入选项
    - 按照 Trakt 的指引完成导入
 
